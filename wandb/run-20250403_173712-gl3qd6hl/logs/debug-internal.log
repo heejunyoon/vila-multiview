@@ -1,0 +1,18 @@
+{"time":"2025-04-03T17:37:12.01405423+09:00","level":"INFO","msg":"using version","core version":"0.18.7"}
+{"time":"2025-04-03T17:37:12.014061103+09:00","level":"INFO","msg":"created symlink","path":"/home/heejunyoon/1_CODE/VILA/wandb/run-20250403_173712-gl3qd6hl/logs/debug-core.log"}
+{"time":"2025-04-03T17:37:12.117715629+09:00","level":"INFO","msg":"created new stream","id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.117747179+09:00","level":"INFO","msg":"stream: started","id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.117888583+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.117892204+09:00","level":"INFO","msg":"sender: started","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.117988118+09:00","level":"INFO","msg":"handler: started","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.346245607+09:00","level":"INFO","msg":"stream: closing","id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.600750399+09:00","level":"ERROR","msg":"sender: upsertConfig: RunRecord is nil"}
+{"time":"2025-04-03T17:37:12.600805087+09:00","level":"WARN","msg":"No requirements.txt found, not creating job artifact. See https://docs.wandb.ai/guides/launch/create-job"}
+{"time":"2025-04-03T17:37:12.600807712+09:00","level":"INFO","msg":"sender: sendDefer: no job artifact to save"}
+{"time":"2025-04-03T17:37:12.94923191+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-04-03T17:37:12.949295076+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404 Not Found: {\"errors\":[{\"message\":\"project /vila-eval not found during createRunFiles\",\"path\":[\"createRunFiles\"]}],\"data\":{\"createRunFiles\":null}}"}
+{"time":"2025-04-03T17:37:12.949679197+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-04-03T17:37:12.949723881+09:00","level":"INFO","msg":"handler: closed","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.949728021+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.949767333+09:00","level":"INFO","msg":"sender: closed","stream_id":"gl3qd6hl"}
+{"time":"2025-04-03T17:37:12.949769721+09:00","level":"INFO","msg":"stream: closed","id":"gl3qd6hl"}

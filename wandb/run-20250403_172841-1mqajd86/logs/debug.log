@@ -1,0 +1,38 @@
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Current SDK version is 0.18.7
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Configure stats pid to 161336
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Loading settings from /home/heejunyoon/.config/wandb/settings
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Loading settings from /home/heejunyoon/1_CODE/VILA/wandb/settings
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Loading settings from environment variables: {}
+2025-04-03 17:28:41,581 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Applying setup settings: {'mode': None, '_disable_service': None}
+2025-04-03 17:28:41,582 WARNING MainThread:161336 [wandb_setup.py:_flush():79] Could not save program above cwd: /home/heejunyoon/anaconda3/envs/vila/bin/vila-eval
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Inferring run settings from compute environment: {'program_relpath': None, 'program_abspath': '/home/heejunyoon/anaconda3/envs/vila/bin/vila-eval', 'program': '/home/heejunyoon/anaconda3/envs/vila/bin/vila-eval'}
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_setup.py:_flush():79] Applying login settings: {}
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:_log_setup():533] Logging user logs to /home/heejunyoon/1_CODE/VILA/wandb/run-20250403_172841-1mqajd86/logs/debug.log
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:_log_setup():534] Logging internal logs to /home/heejunyoon/1_CODE/VILA/wandb/run-20250403_172841-1mqajd86/logs/debug-internal.log
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:init():619] calling init triggers
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:init():626] wandb.init called with sweep_config: {}
+config: {'model_path': 'Efficient-Large-Model/Llama-3-VILA1.5-8B', 'conv_mode': 'auto'}
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:init():669] starting backend
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:init():673] sending inform_init request
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [backend.py:_multiprocessing_setup():104] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2025-04-03 17:28:41,582 INFO    MainThread:161336 [wandb_init.py:init():686] backend started and connected
+2025-04-03 17:28:41,583 INFO    MainThread:161336 [wandb_init.py:init():781] updated telemetry
+2025-04-03 17:28:41,586 INFO    MainThread:161336 [wandb_init.py:init():814] communicating run to backend with 90.0 second timeout
+2025-04-03 17:28:42,059 WARNING MainThread:161336 [wandb_init.py:init():1260] interrupted
+Traceback (most recent call last):
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1256, in init
+    return wi.init()
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 817, in init
+    result = run_init_handle.wait(
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 279, in wait
+    found, abandoned = self._slot._get_and_clear(timeout=wait_timeout)
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 126, in _get_and_clear
+    if self._wait(timeout=timeout):
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 122, in _wait
+    return self._event.wait(timeout=timeout)
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/threading.py", line 607, in wait
+    signaled = self._cond.wait(timeout)
+  File "/home/heejunyoon/anaconda3/envs/vila/lib/python3.10/threading.py", line 324, in wait
+    gotit = waiter.acquire(True, timeout)
+KeyboardInterrupt
+2025-04-03 17:28:42,077 WARNING MsgRouterThr:161336 [router.py:message_loop():75] message_loop has been closed

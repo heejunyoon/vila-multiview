@@ -244,10 +244,12 @@ def opencv_extract_frames(vpath_or_bytesio, frames=6, max_fps=0.0, fps=None, fra
 
 
 def load_image_from_base64(image):
+    print("!!!!!!!!!!!!load_image_from_base64")
     return Image.open(BytesIO(base64.b64decode(image)))
 
 
 def expand2square(pil_img, background_color):
+    print("!!!!!!!!!!!!expand2square")
     """
     Expand the given PIL image to a square shape by adding padding.
 
@@ -294,6 +296,7 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
 
 
 def dynamic_preprocess(image, min_num=1, max_num=12, image_size=384, use_thumbnail=True):
+    print("!!!!!!!!!!!!!dynamic_preprocess is called")
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
 
@@ -440,6 +443,10 @@ def process_image(
     image_file, data_args, image_folder, enable_dynamic_res=False, enable_dynamic_s2=False, max_tiles=None
 ):
     processor = data_args.image_processor
+    # print(f"processor {processor}")
+    # 고치기
+    # processor.size["height"]=384*2
+    # processor.size["width"]=384*2
     if isinstance(image_file, str):
         if image_folder is not None:
             image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
@@ -473,10 +480,13 @@ def process_image(
         images = [processor.preprocess(image, return_tensors="pt")["pixel_values"][0] for image in images]
         return torch.stack(images)
 
-    if data_args.image_aspect_ratio == "resize":
-        image = image.resize((crop_size["width"], crop_size["height"]))
-    if data_args.image_aspect_ratio == "pad":
 
+    if data_args.image_aspect_ratio == "resize": #기본 모드는 resize로 들어옴
+        image = image.resize((crop_size["width"], crop_size["height"])) #crop_size {'height': 384, 'width': 384}
+        # print(f"crop_size {crop_size}")
+        # 고치기
+        # print(f"image {np.shape(image)}")
+    if data_args.image_aspect_ratio == "pad":
         def expand2square(pil_img, background_color):
             width, height = pil_img.size
             if width == height:
@@ -499,6 +509,8 @@ def process_image(
         # For Siglip, default is resize
         # For InternVIT, default is resize
         image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/siglip/image_processing_siglip.pyhttps://github.com/huggingface/transformers/blob/main/src/transformers/models/siglip/image_processing_siglip.py
+        # 위 링크 참고.
     return image
 
 

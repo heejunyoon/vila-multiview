@@ -38,20 +38,22 @@ def main() -> None:
     parser.add_argument("--num_video_frames", "-nf", type=str, default="8/16/32/64/128/256/512")
     parser.add_argument("--max_tiles", "-mt", type=int, default=12)
     parser.add_argument("--output-dir", type=str, default=None)
-    parser.add_argument("--report-to", "-r", choices=["wandb", None], default=None)
+    parser.add_argument("--report-to", "-r", choices=["wandb", None], default="wandb") #setting wandb
     args = parser.parse_args()
 
+    print(args)
     # Get the model name and output directory
     model_name = os.path.basename(os.path.normpath(args.model_path)).lower()
     if args.model_name is not None:
         model_name = args.model_name
-    output_dir = os.path.join("runs", "eval", model_name)
+    output_dir = os.path.join("runs", "eval", model_name) # 저장위치
     num_video_frames = args.num_video_frames.split("/")
     if args.output_dir is not None:
         output_dir = osp.expanduser(args.output_dir)
 
     # Filter tasks based on name and tags
     tasks = []
+    print(args.tags_include)
     for task, metainfo in TASKS.items():
         tags = set(metainfo.get("tags", []))
         if args.tasks is not None and task not in args.tasks:

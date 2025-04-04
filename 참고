@@ -1,0 +1,7 @@
+참고용 이미지 출력
+
+1. matching_{idx} --> image_features로 MASt3R 돌려서 dist sorting 후 top20개  시각화. 픽셀단위임. 약 1000개 이상 매칭됨
+
+2. 2dpool_matching_{idx} --> desc1, desc2를 avg_pool2d로 14x14로 pooling 후 집어넣어서 fast_reciprocal_NNs_dist_sorting 하는 경우 --> 5~10개 정도 매칭
+
+3. 2dpool_matching_{idx} --> desc1, desc2를 avg_pool2d로 14x14로 pooling 후 집어넣어서 fast_reciprocal_NNs_IDX_sorting 하는 경우 --> 300~400개 정도 매칭

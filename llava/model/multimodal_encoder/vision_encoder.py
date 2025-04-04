@@ -27,14 +27,13 @@ from s2wrapper import forward as multiscale_forward
 from transformers import AutoConfig, PreTrainedModel
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
+import numpy as np
 
 class VisionTower(nn.Module):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
-
+        print("llava>model>multimodal_encoder>vision_encoder.py> VisionTower.__init__() is called")
         self.is_loaded = False
-
         self.vision_tower_name = vision_tower
         self.select_layer = getattr(args, "mm_vision_select_layer", -2)
         self.select_feature = getattr(args, "mm_vision_select_feature", "patch")
@@ -42,13 +41,23 @@ class VisionTower(nn.Module):
         self.cfg_only = None
 
     def feature_select(self, image_forward_outs):
+        # print("llava>model>multimodal_encoder>vision_encoder.py> VisionTower.feature_select() is called")
+        # print(f"image_forward_outs hidden state: {len(image_forward_outs['hidden_states'])}")
+        # print(f"image_forward_outs hidden state: {image_forward_outs['hidden_states'][1].size()}")
+        # print(f"image_forward_outs pooler_output: {image_forward_outs['pooler_output'][1].size()}")
+        # check_eqaul = torch.equal(image_forward_outs['hidden_states'][-2], image_forward_outs.hidden_states[-2])
+        # print(f"check equal : !!! {check_eqaul}")
+        # print(f"self.select_layer {self.select_layer}")
         image_features = image_forward_outs.hidden_states[self.select_layer]
+        # print(f"llava>model>multimodal_encoder>vision_encoder.py> image_features: {np.shape(image_features)}")
+        # print(f"self.select_feature {self.select_feature}")
         if self.select_feature == "patch":
             image_features = image_features[:, 1:]
-        elif self.select_feature == "cls_patch":
+        elif self.select_feature == "cls_patch": # 현재 이걸로 설정되어 있음
             image_features = image_features
         else:
             raise ValueError(f"Unexpected select feature: {self.select_feature}")
+        # print(f"llava>model>multimodal_encoder>vision_encoder.py> image_features: {np.shape(image_features)}")
         return image_features
 
     def _maybe_resize_pos_embeds(
@@ -131,7 +140,9 @@ class VisionTower(nn.Module):
         )
 
     def forward(self, images):
+        print("llava>model>multimodal_encoder>vision_encoder.py> VisionTower.forward() is called")
         if type(images) is list:
+            print("llava>model>multimodal_encoder>vision_encoder.py> VisionTower.forward() is called> type(images) is list")
             image_features = []
             for image in images:
                 image_forward_out = self.vision_tower(

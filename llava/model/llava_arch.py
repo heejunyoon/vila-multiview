@@ -43,7 +43,164 @@ from llava.utils import distributed as dist
 from llava.utils.media import extract_media
 from llava.utils.tokenizer import tokenize_conversation
 
+# matching용 추가.
+import sys
+sys.path.append("/home/heejunyoon/1_CODE/VILA/mast3r") #경로추가
+from mast3r.model import AsymmetricMASt3R
+from mast3r.fast_nn import fast_reciprocal_NNs_idx_sorting, fast_reciprocal_NNs_dist_sorting
+from dust3r.inference import inference
+import numpy as np
+#############################################################################
 
+class MASt3R():
+    def __init__(self, *args, **kwargs):
+        self.device = 'cuda'
+        # self.merge_mode = kwargs.is_merging
+    
+    def load_mast3r(self, *args, **kwargs):
+        model_name = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
+        mast3r = AsymmetricMASt3R.from_pretrained(model_name).to(self.device) # 모델 변경 시 dust3r에 model.py 확인
+        return mast3r
+    
+    def merge_features(self, images, image_features, *args, **kwargs):
+        import math
+        mast3r = self.load_mast3r()
+        num_images = images.size(0)
+        patch_num_W = int(math.sqrt(image_features.size(1)))
+        patch_size = 14 # 수정: 나중에는 config나 argument로 받아서 처리할 것.
+        # merging 진행
+        # org_image_features = copy.deepcopy(image_features)
+        self.merge_mode = False
+        merg_percentage = 1 # merg_percentage%의 매칭을 대체하는 방식으로 진행
+        
+        if self.merge_mode:
+            print(f"merg_percentage {merg_percentage*100}%")
+            print("!!!!! Token merging mode 진행!!!!!")
+            image_features = image_features.view(num_images, patch_num_W, patch_num_W, 1152) # 27x27 grid로 변환
+        else:
+            return image_features
+            
+        for pair in range(num_images): #각 이미지 페어 대해 진행
+            img1 = images[pair].to(torch.float32) # torch.Size([3, 384, 384])
+            img2 = images[(pair+1)%num_images].to(torch.float32)
+            dict1 = {"img": img1.unsqueeze(0),
+                "true_shape": np.array([[img1.shape[-2], img1.shape[-1]]], dtype=np.int32),
+                "idx": 0,
+                "instance": '0'}
+            
+            dict2 = {"img": img2.unsqueeze(0),
+                "true_shape": np.array([[img2.shape[-2], img2.shape[-1]]], dtype=np.int32),
+                "idx": 1,
+                "instance": '1'}
+            
+            image_temp = [dict1, dict2]  # Store as a list
+            output_mast3r = inference([tuple(image_temp)], mast3r, self.device, batch_size=1, verbose=False) # 매칭 잘 되는것 확인
+
+            pred1, pred2 = output_mast3r['pred1'], output_mast3r['pred2']
+            desc1, desc2 = pred1['desc'].squeeze(0).detach(), pred2['desc'].squeeze(0).detach() #각각 torch.Size([384, 384, 24])
+
+            # 참고
+            # desc1, desc2 그냥 집어넣어서 fast_reciprocal_NNs_dist_sorting 하는 경우 --> 픽셀단위, 매칭 약 1000개 이상
+            # desc1, desc2를 avg_pool2d로 14x14로 pooling 후 집어넣어서 fast_reciprocal_NNs_dist_sorting 하는 경우 --> 5~10개 정도 매칭
+
+            # Aggregate features into patch-wise representations
+            desc1 = desc1.permute(2, 0, 1).unsqueeze(0)  # (1, 24, H, W)
+            desc2 = desc2.permute(2, 0, 1).unsqueeze(0)  # (1, 24, H, W)
+
+            patch_features1 = F.avg_pool2d(desc1, kernel_size=patch_size, stride=patch_size)  # (1, 24, H//P, W//P)
+            patch_features2 = F.avg_pool2d(desc2, kernel_size=patch_size, stride=patch_size)  # (1, 24, H//P, W//P)
+
+            # permute the dimension from (B, num_patches, H, W) --> (H, W, DIM)
+            patch_features1 = patch_features1.permute(0, 2, 3, 1).squeeze()
+            patch_features2 = patch_features2.permute(0, 2, 3, 1).squeeze()
+            
+            ## distance sorting
+            matches_im0, matches_im1 = fast_reciprocal_NNs_dist_sorting(
+                patch_features1, patch_features2, subsample_or_initxy1=1, device='cuda')
+            num_matches = matches_im0.shape[0]
+            n_merge = int(num_matches * merg_percentage)  # merg% of the matches
+            match_idx_to_merg = np.round(np.linspace(0, num_matches - 1, n_merge)).astype(int) # unif sampling
+            
+            ## idx sorting
+            # matches_im0, matches_im1 = fast_reciprocal_NNs_idx_sorting(
+            #     patch_features1, patch_features2, subsample_or_initxy1=1, device='cpu')
+            # num_matches = matches_im0.shape[0]
+            # n_merge = int(num_matches * merg_percentage)  # merg% of the matches
+            # match_idx_to_merg = np.round(np.linspace(0, num_matches-1 , num_matches)).astype(int) # 상위 n_viz개만 갖고오도록...
+            
+            merg_matches_im0, merg_matches_im1 = matches_im0[match_idx_to_merg], matches_im1[match_idx_to_merg]
+
+            
+            if num_matches < 10: #매칭이 너무 적으면 넘어감. 보통 매치 안되는 경우 10개 내외여서 이렇게 설정. 필요하면 수정
+                print(f"pair {pair} match 개수 {num_matches} --> 너무 적어서 넘어감")
+                continue
+                        
+            if self.merge_mode:
+                # print(f"image_features {image_features.size()}")
+                # print(f"pair {pair}")
+                # 20%의 매칭을 대체하는 방식
+                for i in range(n_merge):
+                    (x0, y0), (x1, y1) = merg_matches_im0[i].T, merg_matches_im1[i].T #패치 단위로 변환
+                    
+                    # replace 방식으로 merging진행.
+                    # image_features[(pair+1)%num_images,x1, y1,:] = image_features[pair,x0,y0,:]
+
+                    # avg 방식으로 merging진행.
+                    image_features[(pair+1)%num_images,x1, y1,:] = (image_features[pair,x0,y0,:]+image_features[(pair+1)%num_images,x1, y1,:])/2
+            
+            from matplotlib import pyplot as plt
+            def viz(matches_im0,matches_im1,img1,img2, merg_percentage):
+                num_matches = matches_im0.shape[0]
+                n_merge = int(num_matches * merg_percentage)  # merg% of the matches
+                # match_idx_to_merg = np.round(np.linspace(0, num_matches-1 , num_matches)).astype(int) # 상위 n_viz개만 갖고오도록...
+                match_idx_to_merg = np.round(np.linspace(0, num_matches - 1, n_merge)).astype(int) # unif sampling
+                merg_matches_im0, merg_matches_im1 = matches_im0[match_idx_to_merg], matches_im1[match_idx_to_merg]
+                # # 시각화용 코드.
+                
+                # color_map_list = [
+                #     tuple(map(int, cv2.applyColorMap(np.array([[int(i / (n_merge - 1) * 255)]], dtype=np.uint8), cv2.COLORMAP_JET)[0, 0].tolist()))
+                #     for i in range(n_merge)]
+                
+                plt.figure(figsize=(15, 10))
+                img1 = img1[:, :patch_num_W*patch_size, :patch_num_W*patch_size]
+                img2 = img2[:, :patch_num_W*patch_size, :patch_num_W*patch_size]
+                image_mean = torch.as_tensor([0.5, 0.5, 0.5], device='cpu').reshape(3, 1, 1) #img 0~1 value
+                image_std = torch.as_tensor([0.5, 0.5, 0.5], device='cpu').reshape(3, 1, 1)
+                viz_imgs = np.ones((img1.size(1), img1.size(2)*2, 3), dtype=np.uint8)  # White background
+                viz_imgs[:, :img1.size(2),:] = (img1*image_std+image_mean).permute(1,2,0).cpu().numpy()*255
+                viz_imgs[:, img1.size(2):,:] = (img2*image_std+image_mean).permute(1,2,0).cpu().numpy()*255
+                            
+                # print(f"match 개수 {len(matches_im0)}")
+                cmap = plt.get_cmap('jet')
+                for i in range(n_merge):
+                    (x0, y0), (x1, y1) = 14*merg_matches_im0[i].T+patch_size//2, 14*merg_matches_im1[i].T #패치 단위로 변환
+
+                    # cv2.line(viz_imgs, (int(x0), int(y0)), (int(x1 + images.size(3)), int(y1)), color_map_list[i], 1)
+                    plt.plot([x0, x1 + images.size(2)], [y0, y1+patch_size//2], '-+', color=cmap(1- i / (num_matches - 1)), scalex=False, scaley=False)
+                plt.imshow(viz_imgs)
+                H, W = viz_imgs.shape[:2]
+                for x in range(0, W, 14):
+                    plt.axvline(x, color='white', linestyle='--', linewidth=0.1)  # Vertical grid lines every 16 pixels
+                for y in range(0, H, 14):
+                    plt.axhline(y, color='white', linestyle='--', linewidth=0.1)  # Horizontal grid lines every 16 pixels
+                plt.axis("off")
+                plt.title(f"Match Count: {num_matches}, use {int(merg_percentage*100)}%", fontsize=16)
+                plt.savefig(f"dist_sorting_muir53_4_{pair}_{int(merg_percentage*100)}%.png", dpi=300, bbox_inches='tight')
+                # plt.show()
+        
+            # viz(matches_im0,matches_im1,img1,img2, 0)
+            # viz(matches_im0,matches_im1,img1,img2, 0.1)
+            # viz(matches_im0,matches_im1,img1,img2, 0.2)
+            # viz(matches_im0,matches_im1,img1,img2, 0.5)
+            # viz(matches_im0,matches_im1,img1,img2, 0.7)
+            # viz(matches_im0,matches_im1,img1,img2, 1)
+        if self.merge_mode:
+            image_features = image_features.view(num_images, -1, 1152) # 다시 사이즈 변환
+        # is_same = torch.equal(org_image_features, image_features)
+        # print(f"org_image_features & merged EQUAL : {is_same}")
+        return image_features
+
+###############################
 class LlavaMetaModel(ABC):
     def init_vlm(self, config, *args, **kwargs):
         # TODO(ligeng): figure out how from_config and from_pretrained works in HF implementation.
@@ -102,6 +259,7 @@ class LlavaMetaModel(ABC):
     ## FIXME we will use this function to load model in the future
     @classmethod
     def load_pretrained(cls, model_path_or_config, *args, **kwargs):
+        print("load_pretrained in llava_arch.py is used")
         kwargs.pop("config", None)
 
         if isinstance(model_path_or_config, str):
@@ -220,7 +378,7 @@ class LlavaMetaModel(ABC):
             vision_tower = vision_tower[0]
         return vision_tower
 
-    def get_mm_projector(self):
+    def get_mm_projector(self): #2번 호출됨.... 왜???
         mm_projector = getattr(self, "mm_projector", None)
         if type(mm_projector) is list:
             mm_projector = mm_projector[0]
@@ -250,7 +408,8 @@ class LlavaMetaModel(ABC):
                 self.get_mm_projector().eval()
 
     @staticmethod
-    def merge_chessboard(x, num_split_h, num_split_w):
+    def merge_chessboard(x, num_split_h, num_split_w): # 당장은 안쓰이는듯?
+        print("merge_chessboard in llava_arch.py is used --> please check what is the purpose of this function")
         """
         x: b * n * c or b * h * w * c
         out: b * c * h * w
@@ -384,8 +543,31 @@ class LlavaMetaModel(ABC):
             if all([feature.shape[0] == image_features[0].shape[0] for feature in image_features]):
                 image_features = torch.stack(image_features, dim=0)
         else:
-            image_features = self.get_vision_tower()(images)
-            image_features = self.get_mm_projector()(image_features)
+            # VILA는 기본적으로 여기로 들어가는 듯?
+            # print(self.config)
+            # images torch.Size([6, 3, 384, 384])
+            image_features = self.get_vision_tower()(images) # 출력 tensor, torch.Size([6, 729, 1152])'
+            print("DONE WITH VISION TOWER")
+            new_image_feature = MASt3R().merge_features(images, image_features, )
+            # print(self.config.__dict__.keys())
+            print("DONE WITH MASt3R")
+                            
+            # print(f"llava>model>llava_arch.py>LlavaMetaModel>encode_images : {type(images)}, {np.shape(images)}")
+            """
+            해야함
+            v 1. image feature 구성 어떻게 되어있는지 확인. --> torch.Size([6, 729, 1152])
+            v 2. 기존 이미지 어딨는지 확인 후 normalize 필요한지 여부 확인. --> normalize 되어있는듯. print(self.config.__dict__.keys())로 확인
+            v 3. 기존 이미지 등 mast3r 구성 요소 맞도록 변경작업
+            v 4. mast3r 결과 나온거에서 patch 단위로 avg 진행
+            v 5. avg한 패치 내 feature를 fastNN 알고리즘 통과
+            v 6. 나온 매칭 결과 중 한 20% 정도 (나중에 확인 후 변경시키기) 기준 하나 잡아서 대체작업(아니면 avg 해서 대체할 것)
+            v 7. (poisitional encoding은 안건드려도 됨. 일단 그대로 둘 것.)
+            v 8. 그렇게 변경시킨 feature는 projector로 전달.
+            """
+            ############################################################# 여기에 merging-->일단 그렇게 진행.
+            image_features = self.get_mm_projector()(new_image_feature) #출력 torch.Size([6, 196, 2560])
+            print("DONE WITH mm_projector")
+        # image_features = torch.Size([6, 196, 2560])
         return image_features
 
     ## @yunhao: is there a better way to handle function call and attributes for llm?
@@ -416,8 +598,8 @@ class LlavaMetaForCausalLM(ABC):
         attention_mask = attention_mask if attention_mask is not None else torch.ones_like(input_ids, dtype=torch.bool)
 
         # Extract text and media embeddings
-        text_embeds = self.llm.model.embed_tokens(input_ids)
-        media_embeds = self.__embed_media_tokens(media, media_config)
+        text_embeds = self.llm.model.embed_tokens(input_ids) #text_embeds torch.Size([1, 50, 2560])
+        media_embeds = self.__embed_media_tokens(media, media_config) #media_embeds['image'][i].size() torch.Size([199, 2560])
 
         # This is a workaround to make sure the dummy embeddings are consumed
         while media_embeds.get("dummy"):
@@ -443,7 +625,7 @@ class LlavaMetaForCausalLM(ABC):
                 if input_ids[k][pos].item() in media_tokens:
                     end = pos + 1
                     name = media_tokens[input_ids[k][pos].item()]
-                    input = media_embeds[name].popleft()
+                    input = media_embeds[name].popleft() # 사이즈는 계속 유지됨
                     label = torch.full([input.shape[0]], IGNORE_INDEX, device=labels[k].device, dtype=labels[k].dtype)
                 else:
                     end = pos
@@ -474,9 +656,9 @@ class LlavaMetaForCausalLM(ABC):
         media: Dict[str, List[torch.Tensor]],
         media_config: Dict[str, Dict[str, Any]],
     ) -> Dict[str, List[torch.Tensor]]:
-        embeds = defaultdict(deque)
+        embeds = defaultdict(deque) # defaultdict(<class 'collections.deque'>, {})
         for name in media:
-            if self.training:
+            if self.training: # training 시
                 # Gather metainfo of media objects from all ranks
                 info = [{"shape": tensor.shape, "dtype": tensor.dtype} for tensor in media.get(name, [])]
                 infos = list(chain(*dist.all_gather(info)))
@@ -491,6 +673,7 @@ class LlavaMetaForCausalLM(ABC):
                     embeds["dummy"].extend(self.encoders[name]([dummy], media_config[name]))
                     continue
             embeds[name] = deque(self.encoders[name](media[name], media_config[name]))
+            # embeds['image'] 에 image의 각각의 tensor들 쌓임. len(embeds['image'])=6
         return embeds
 
     def __truncate_sequence(
@@ -538,7 +721,7 @@ class LlavaMetaForCausalLM(ABC):
         # We do re-sharding instead of packing here to ensure the sequence length is the same across all ranks.
         if PROCESS_GROUP_MANAGER is not None:
             sp_degree = PROCESS_GROUP_MANAGER.sp_degree
-            sp_rank = PROCESS_GROUP_MANAGER.sp_rank
+            sp_rank = PROCESS_GROUP_MANAGER.sp_rankFalse
             sp_group = PROCESS_GROUP_MANAGER.sp_pg
             ring_degree = PROCESS_GROUP_MANAGER.ring_degree
             ring_rank = PROCESS_GROUP_MANAGER.ring_rank
@@ -658,7 +841,7 @@ class LlavaMetaForCausalLM(ABC):
                         new_position_ids[i, : new_seqlen_per_rank[i]] = global_position_ids[i, start_idx:end_idx]
                         new_labels[i, : new_seqlen_per_rank[i]] = global_labels[i, start_idx:end_idx]
                         new_inputs_embeds[i, : new_seqlen_per_rank[i], :] = global_inputs_embeds[
-                            i, start_idx:end_idx, :
+                            i, start_idx:end_idx, :config
                         ]
                 elif ring_type == "zigzag_ring_varlen":
                     chunk_size = total_effective_seqlen // (2 * sp_degree)
@@ -807,10 +990,11 @@ class LlavaMetaForCausalLM(ABC):
         **generation_kwargs,
     ):
         inputs_embeds, _, attention_mask = self._embed(input_ids, media, media_config, None, attention_mask)
+
         return self.llm.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **generation_kwargs)
 
     @torch.inference_mode()
-    def generate_content(
+    def generate_content( #이게 llava>cli>infer.py 에서 모델 불러온 다음에 바로 실행됨.
         self,
         prompt: Union[str, List],
         generation_config: Optional[GenerationConfig] = None,
@@ -829,6 +1013,9 @@ class LlavaMetaForCausalLM(ABC):
 
         # TODO (extract and preprocess should be done together, as the preprocess of image and video can be different, i.e. when dynamic res is used)
         media = extract_media(conversation, self.config)
+        # media에는 이미지 6장 들어왔으면 dict 형태로 저장되어있음
+        # defaultdict(<class 'list'>, {'image': [<PIL.PngImagePlugin.PngImageFile image mode=RGB size=256x192 at 0x70E241BDF6D0>, 
+        # <PIL.PngImagePlugin.PngImageFile image mode=RGB size=256x192 at 0x70E241BDD0F0>, ... 이렇게 6개]})
 
         # Process media
         media_config = defaultdict(dict)
@@ -849,9 +1036,11 @@ class LlavaMetaForCausalLM(ABC):
                         )
                         images = images.half()
                         media_config[name]["block_sizes"] = [block_sizes]
-                else:
+                else: #이미지 여러 장 들어왔을 때
                     images = process_images(media["image"], self.vision_tower.image_processor, self.config).half()
+                    # images는 temsor 형태. 6장의 이미지가 들어왔으면 torch.Size([6, 3, 384, 384])
                 media[name] = [image for image in images]
+                # print((media["image"][0].size())) 하면 torch.Size([3, 384, 384]) 나옴
             elif name == "video":
                 media[name] = [
                     process_images(images, self.vision_tower.image_processor, self.config).half()
@@ -859,10 +1048,11 @@ class LlavaMetaForCausalLM(ABC):
                 ]
             else:
                 raise ValueError(f"Unsupported media type: {name}")
-
         # Tokenize the conversation
         input_ids = tokenize_conversation(conversation, self.tokenizer, add_generation_prompt=True).cuda().unsqueeze(0)
-
+        # input_ids= tensor([[    1,   319, 13563,  1546,   263, 12758,  1404,   322,   385, 23116,...
+        # conversation = [{'from': 'human', 'value': '<image><image><image><image><image><image>Please describe the image'}, {'from': 'gpt', 'value': None}]
+        
         # Set up the generation config
         generation_config = generation_config or self.default_generation_config
 

@@ -1,0 +1,29 @@
+_wandb:
+    value:
+        cli_version: 0.18.7
+        m: []
+        python_version: 3.10.14
+        t:
+            "1":
+                - 1
+                - 55
+                - 105
+            "2":
+                - 1
+                - 55
+                - 105
+            "3":
+                - 13
+                - 16
+                - 23
+                - 55
+            "4": 3.10.14
+            "5": 0.18.7
+            "8":
+                - 5
+            "12": 0.18.7
+            "13": linux-x86_64
+conv_mode:
+    value: auto
+model_path:
+    value: Efficient-Large-Model/Llama-3-VILA1.5-8B

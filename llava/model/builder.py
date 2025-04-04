@@ -35,6 +35,7 @@ def load_pretrained_model(
     **kwargs,
 ):
     kwargs = {"device_map": device_map, **kwargs}
+    print("llaval>model>builder>load_pretrained_model()")
 
     if device != "cuda":
         kwargs["device_map"] = {"": device}
@@ -53,20 +54,26 @@ def load_pretrained_model(
         kwargs["torch_dtype"] = torch.float16
         # kwargs["torch_dtype"] = torch.bfloat16
 
-    if is_mm_model(model_path):
-        # Load LLaVA model
+    if is_mm_model(model_path):# Load LLaVA model (Text, Image 처리용 모델 불러오기)
+        print("llaval>model>builder>load_pretrained_model()>is_mm_model() : True")
+        # LlavaLlamaModel 사용됨
         ## TODO @yunhao: mind fixing lora
         if "lora" in model_name.lower() and model_base is None:
+            print("llaval>model>builder>load_pretrained_model()>lora")
             warnings.warn(
                 "There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged."
             )
         if ("lora" in model_name.lower() or "dora" in model_name.lower()) and model_base is not None:
+            print("llaval>model>builder>load_pretrained_model()>lora or dora")
             lora_cfg_pretrained = AutoConfig.from_pretrained(model_path)
-            print(lora_cfg_pretrained)
+            print(f"lora_cfg_pretrained : {lora_cfg_pretrained}")
             print("Loading LLaVA from base model...")
             config = AutoConfig.from_pretrained(model_base)
+
+            # LLaVA model 불러오기
             prepare_config_for_eval(config, kwargs)
             model = LlavaLlamaModel.from_pretrained(model_base, low_cpu_mem_usage=True, config=config, **kwargs)
+            
             tokenizer = model.tokenizer
             token_num, tokem_dim = model.llm.lm_head.out_features, model.llm.lm_head.in_features
             if model.llm.lm_head.weight.shape[0] != token_num:
@@ -84,6 +91,7 @@ def load_pretrained_model(
                     map_location="cpu",
                 )
             else:
+                print("Loading non_lora_trainables from HF Hub...")
                 # this is probably from HF Hub
                 from huggingface_hub import hf_hub_download
 
@@ -115,7 +123,8 @@ def load_pretrained_model(
             model = LlavaLlamaModel(config=config, low_cpu_mem_usage=True, **kwargs)
             tokenizer = model.tokenizer
     else:
-        # Load language model
+        print("llaval>model>builder>load_pretrained_model()>is_mm_model() : False")
+        # Load language model (Text 처리용 모델 불러오기)
         if model_base is not None:
             # PEFT model
             from peft import PeftModel
@@ -133,12 +142,13 @@ def load_pretrained_model(
             model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
     model.eval()
     image_processor = None
-    if is_mm_model(model_path):
+    if is_mm_model(model_path): # multi-modal의 경우 (내상황)
+        print("llaval>model>builder>load_pretrained_model()>is_mm_model() : True")
         model.resize_token_embeddings(len(tokenizer))
         vision_tower = model.get_vision_tower()
         vision_tower.to(device=device, dtype=torch.float16)
         # vision_tower.to(device=device, dtype=torch.bfloat16)
-        mm_projector = model.get_mm_projector()
+        mm_projector = model.get_mm_projector() # 왜 따로 빼지?? 안쓰이는듯?
         mm_projector.to(device=device, dtype=torch.float16)
         # mm_projector.to(device=device, dtype=torch.bfloat16)
         image_processor = vision_tower.image_processor

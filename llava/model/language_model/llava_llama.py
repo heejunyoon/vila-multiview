@@ -36,7 +36,6 @@ from ..llava_arch import LlavaMetaForCausalLM, LlavaMetaModel
 class LlavaLlamaConfig(LlavaConfig):
     model_type = "llava_llama"
 
-
 # FIXME we will follow the convention to add a new class for CausalLM in the future
 class LlavaLlamaModel(LlavaMetaModel, LlavaMetaForCausalLM, PreTrainedModel):
     config_class = LlavaLlamaConfig
@@ -114,13 +113,12 @@ class LlavaLlamaModel(LlavaMetaModel, LlavaMetaForCausalLM, PreTrainedModel):
                 raise ValueError("Both 'media' and 'images' are provided. Please provide only one.")
             logger.warning("The 'images' argument is deprecated. Please use 'media' instead.")
             media = {"image": images}
-
         if media_config is None:
             media_config = defaultdict(dict)
 
         if inputs_embeds is None:
             inputs_embeds, labels, attention_mask = self._embed(input_ids, media, media_config, labels, attention_mask)
-
+            print(f"inputs_embeds in the forward function :{np.shape(inputs_embeds)}")
         if packing and self.training and not dpo_forward:
             if seqlens_in_batch is None:
                 seqlens_in_batch = torch.sum(attention_mask, dim=1)
@@ -129,7 +127,13 @@ class LlavaLlamaModel(LlavaMetaModel, LlavaMetaForCausalLM, PreTrainedModel):
             (inputs_embeds, attention_mask, position_ids, labels) = self.repack_multimodal_data(
                 inputs_embeds, attention_mask, position_ids, labels
             )
+        print(f"inputs_embeds in the forward function :{np.shape(inputs_embeds)}")
+        print(f"attention_mask in the forward function :{np.shape(attention_mask)}")
+        print(f"position_ids in the forward function :{np.shape(position_ids)}")
+        print(f"labels in the forward function :{np.shape(labels)}")
 
+
+        #LLM forward
         outputs = self.llm(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,

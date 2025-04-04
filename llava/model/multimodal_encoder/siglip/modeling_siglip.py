@@ -256,6 +256,265 @@ class SiglipOutput(ModelOutput):
             self[k] if k not in ["text_model_output", "vision_model_output"] else getattr(self, k).to_tuple()
             for k in self.keys()
         )
+    
+
+################################################################################################################
+# matching용 추가.
+# import sys
+# sys.path.append("/home/heejunyoon/1_CODE/VILA/mast3r") #경로추가
+from mast3r.model import AsymmetricMASt3R
+from mast3r.fast_nn import fast_reciprocal_NNs_idx_sorting, fast_reciprocal_NNs_dist_sorting
+from dust3r.inference import inference
+import numpy as np
+
+class MASt3R():
+    def __init__(self, *args, **kwargs):
+        self.device = 'cuda'
+        # self.merge_mode = kwargs.is_merging
+    
+    def load_mast3r(self, *args, **kwargs):
+        model_name = "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
+        mast3r = AsymmetricMASt3R.from_pretrained(model_name).to(self.device) # 모델 변경 시 dust3r에 model.py 확인
+        return mast3r
+    
+    def merge_features(self, images, embeddings, pos_emb, *args, **kwargs): #image_features 가 pos emb 임. torch.Size([1, 729, 1152])
+        # image_num, _, height, width = pixel_values.shape # torch.Size([6, 3, 384, 384])
+        import math
+        # print(f"!!!!!! images shape {images.shape}")
+        mast3r = self.load_mast3r()
+        num_images = images.size(0)
+        patch_num_W = int(math.sqrt(embeddings.size(1))) # 패치 한쪽변 개수
+        patch_size = 14 # 수정: 나중에는 config나 argument로 받아서 처리할 것.
+        # merging 진행
+        # org_image_features = copy.deepcopy(image_features)
+        self.merge_mode = True
+        merg_percentage = 1 # merg_percentage%의 매칭을 대체하는 방식으로 진행
+        
+        if self.merge_mode:
+            print(f"merg_percentage {merg_percentage*100}%")
+            print("!!!!! Pos Emb Avg 진행!!!!!")
+            embeddings = embeddings.view(num_images, patch_num_W, patch_num_W, 1152) # 27x27 grid로 변환
+            pos_emb = pos_emb.view(1,patch_num_W, patch_num_W, 1152)
+            emb_with_pos = embeddings + pos_emb
+        else: #merging 안함
+            return embeddings+pos_emb
+            
+        for pair in range(num_images-1): #각 이미지 페어 대해 진행
+            img1 = images[pair].to(torch.float32) # torch.Size([3, 384, 384])
+            img2 = images[(pair+1)%num_images].to(torch.float32)
+            dict1 = {"img": img1.unsqueeze(0),
+                "true_shape": np.array([[img1.shape[-2], img1.shape[-1]]], dtype=np.int32),
+                "idx": 0,
+                "instance": '0'}
+            
+            dict2 = {"img": img2.unsqueeze(0),
+                "true_shape": np.array([[img2.shape[-2], img2.shape[-1]]], dtype=np.int32),
+                "idx": 1,
+                "instance": '1'}
+            
+            image_temp = [dict1, dict2]  # Store as a list
+            output_mast3r = inference([tuple(image_temp)], mast3r, self.device, batch_size=1, verbose=False) # 매칭 잘 되는것 확인
+
+            pred1, pred2 = output_mast3r['pred1'], output_mast3r['pred2']
+            desc1, desc2 = pred1['desc'].squeeze(0).detach(), pred2['desc'].squeeze(0).detach() #각각 torch.Size([384, 384, 24])
+
+            # matching 진행
+            # Aggregate features into patch-wise representations
+            desc1 = desc1.permute(2, 0, 1).unsqueeze(0)  # (1, 24, H, W)
+            desc2 = desc2.permute(2, 0, 1).unsqueeze(0)  # (1, 24, H, W)
+
+            patch_features1 = F.avg_pool2d(desc1, kernel_size=patch_size, stride=patch_size)  # (1, 24, H//P, W//P)
+            patch_features2 = F.avg_pool2d(desc2, kernel_size=patch_size, stride=patch_size)  # (1, 24, H//P, W//P)
+
+            # permute the dimension from (B, num_patches, H, W) --> (H, W, DIM)
+            patch_features1 = patch_features1.permute(0, 2, 3, 1).squeeze()
+            patch_features2 = patch_features2.permute(0, 2, 3, 1).squeeze()
+            
+            ## distance sorting
+            matches_im0, matches_im1 = fast_reciprocal_NNs_dist_sorting( #매칭되는 패치 쌍 나옴.
+                patch_features1, patch_features2, subsample_or_initxy1=1, device='cuda')
+            num_matches = matches_im0.shape[0]
+            n_merge  = int(num_matches * merg_percentage)  # merg% of the matches
+            match_idx_to_merg = np.round(np.linspace(0, num_matches - 1, n_merge)).astype(int) # unif sampling
+            
+            ## idx sorting
+            # matches_im0, matches_im1 = fast_reciprocal_NNs_idx_sorting(
+            #     patch_features1, patch_features2, subsample_or_initxy1=1, device='cpu')
+            # num_matches = matches_im0.shape[0]
+            # n_merge = int(num_matches * merg_percentage)  # merg% of the matches
+            # match_idx_to_merg = np.round(np.linspace(0, num_matches-1 , num_matches)).astype(int) # 상위 n_viz개만 갖고오도록...
+            
+            merg_matches_im0, merg_matches_im1 = matches_im0[match_idx_to_merg], matches_im1[match_idx_to_merg]
+
+            # print(f"num_matches in {pair}: {num_matches}")
+            if num_matches < 10: #매칭이 너무 적으면 넘어감. 보통 매치 안되는 경우 10개 내외여서 이렇게 설정. 필요하면 수정
+                print(f"pair {pair} match 개수 {num_matches} --> 너무 적어서 넘어감")
+                continue
+            
+
+            # 일단 임베딩 (Pos emb x) 페어로 들고옴
+            # embeddings = embeddings + pos_emb
+            # embeddings1 = embeddings[pair]#images[pair].to(torch.float32)
+            # embeddings2 = embeddings[(pair+1)%num_images]#images[(pair+1)%num_images].to(torch.float32)
+            # pos emb는 그냥 [1,729,1152] 임
+
+            # # 내맘대로 매칭
+            # (x0, y0), (x1, y1) = (2,3), (7,3)
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + (pos_emb[0, x0, y0,:]+pos_emb[0, x1, y1,:])/2 # pos emb다시 더한다
+
+            # (x0, y0), (x1, y1) = (7,6), (12,6)
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + (pos_emb[0, x0, y0,:]+pos_emb[0, x1, y1,:])/2 # pos emb다시 더한다
+
+
+            # (x0, y0), (x1, y1) = (10,3), (7,3)
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + pos_emb[0, x0, y0,:] # pos emb다시 더한다
+            # emb_with_pos[(pair+1)%num_images,x0, y0,:] = emb_with_pos[(pair+1)%num_images,x0, y0,:] - pos_emb[0, x0, y0,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x0, y0,:] = emb_with_pos[(pair+1)%num_images,x0, y0,:] + pos_emb[0, x1, y1,:] # pos emb다시 더한다
+
+            # (x0, y0), (x1, y1) = (2,6), (12,6)
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + pos_emb[0, x0, y0,:] # pos emb다시 더한다
+            # emb_with_pos[(pair+1)%num_images,x0, y0,:] = emb_with_pos[(pair+1)%num_images,x0, y0,:] - pos_emb[0, x0, y0,:] #일단 더해놨던거 빼고
+            # emb_with_pos[(pair+1)%num_images,x0, y0,:] = emb_with_pos[(pair+1)%num_images,x0, y0,:] + pos_emb[0, x1, y1,:] # pos emb다시 더한다
+
+            #원래 매칭 코드
+            if self.merge_mode:
+                # print(f"image_features {image_features.size()}")
+                # print(f"pair {pair}")
+                # 20%의 매칭을 대체하는 방식
+                for i in range(n_merge):
+                    (x0, y0), (x1, y1) = merg_matches_im0[i].T, merg_matches_im1[i].T #패치 단위로 어느 패치끼리 연결되는지
+                    
+                    # replace 방식으로 merging진행.
+                    # image_features[(pair+1)%num_images,x1, y1,:] = image_features[pair,x0,y0,:]
+
+                    # avg 방식으로 merging진행.
+                    # embeddings[(pair+1)%num_images,x1, y1,:] =  embeddings[(pair+1)%num_images,x1, y1,:] + (pos_emb[0,x1, y1,:])/2
+                    # embeddings[(pair+1)%num_images,x1, y1,:] = (embeddings[pair,x0,y0,:]+embeddings[(pair+1)%num_images,x1, y1,:])/2
+
+
+                    # #mast3r로 할 경우
+                    # replace 방식으로 merging진행.
+                    # image_features[(pair+1)%num_images,x1, y1,:] = image_features[pair,x0,y0,:]
+                    # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+                    # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + pos_emb[0, x0, y0,:] # pos emb다시 더한다
+
+                    # # avg 방식
+                    # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] - pos_emb[0, x1, y1,:] #일단 더해놨던거 빼고
+                    # emb_with_pos[(pair+1)%num_images,x1, y1,:] = emb_with_pos[(pair+1)%num_images,x1, y1,:] + (pos_emb[0,x1, y1,:]+pos_emb[0, x0, y0,:])/2 # pos emb다시 더한다
+
+                    
+            def viz(matches_im0,matches_im1,img1,img2, merg_percentage):
+                from matplotlib import pyplot as plt
+                num_matches = matches_im0.shape[0]
+                n_merge = int(num_matches * merg_percentage)  # merg% of the matches
+                # match_idx_to_merg = np.round(np.linspace(0, num_matches-1 , num_matches)).astype(int) # 상위 n_viz개만 갖고오도록...
+                match_idx_to_merg = np.round(np.linspace(0, num_matches - 1, n_merge)).astype(int) # unif sampling
+                merg_matches_im0, merg_matches_im1 = matches_im0[match_idx_to_merg], matches_im1[match_idx_to_merg]
+                # # 시각화용 코드.
+                
+                # color_map_list = [
+                #     tuple(map(int, cv2.applyColorMap(np.array([[int(i / (n_merge - 1) * 255)]], dtype=np.uint8), cv2.COLORMAP_JET)[0, 0].tolist()))
+                #     for i in range(n_merge)]
+                
+                plt.figure(figsize=(15, 10))
+                img1 = img1[:, :patch_num_W*patch_size, :patch_num_W*patch_size].cpu()
+                img2 = img2[:, :patch_num_W*patch_size, :patch_num_W*patch_size].cpu()
+                image_mean = torch.as_tensor([0.5, 0.5, 0.5], device='cpu').reshape(3, 1, 1).cpu() #img 0~1 value
+                image_std = torch.as_tensor([0.5, 0.5, 0.5], device='cpu').reshape(3, 1, 1).cpu()
+                viz_imgs = np.ones((img1.size(1), img1.size(2)*2, 3), dtype=np.uint8)  # White background
+                viz_imgs[:, :img1.size(2),:] = (img1*image_std+image_mean).permute(1,2,0).cpu().numpy()*255
+                viz_imgs[:, img1.size(2):,:] = (img2*image_std+image_mean).permute(1,2,0).cpu().numpy()*255
+                            
+                # print(f"match 개수 {len(matches_im0)}")
+                cmap = plt.get_cmap('jet')
+                for i in range(n_merge):
+                    (x0, y0), (x1, y1) = 14*merg_matches_im0[i].T+patch_size//2, 14*merg_matches_im1[i].T #패치 단위로 변환
+
+                    # cv2.line(viz_imgs, (int(x0), int(y0)), (int(x1 + images.size(3)), int(y1)), color_map_list[i], 1)
+                    plt.plot([x0, x1 + images.size(2)], [y0, y1+patch_size//2], '-+', color=cmap(1- i / (num_matches - 1)), scalex=False, scaley=False)
+                plt.imshow(viz_imgs)
+                H, W = viz_imgs.shape[:2]
+                for x in range(0, W, 14):
+                    plt.axvline(x, color='white', linestyle='--', linewidth=0.3)  # Vertical grid lines every 16 pixels
+                for y in range(0, H, 14):
+                    plt.axhline(y, color='white', linestyle='--', linewidth=0.3)  # Horizontal grid lines every 16 pixels
+                plt.axis("off")
+                plt.title(f"Match Count: {num_matches}, use {int(merg_percentage*100)}%", fontsize=16)
+                # plt.savefig(f"dist_sorting_muir53_4_{pair}_{int(merg_percentage*100)}%.png", dpi=300, bbox_inches='tight')
+                plt.show()
+        
+            # viz(matches_im0,matches_im1,img1,img2, 1)
+
+        emb_with_pos = emb_with_pos.view(num_images, -1, 1152) # 다시 사이즈 변환
+        # is_same = torch.equal(org_image_features, image_features)
+        # print(f"org_image_features & merged EQUAL : {is_same}")
+        return emb_with_pos
+
+# 3D embedding 용 추가
+import sys
+sys.path.append("./src/CUT3R") #경로추가
+from add_ckpt_path import add_path_to_dust3r
+cut3r_model_path = r"./src/CUT3R/cut3r_512_dpt_4_64.pth"
+
+class CUT3R():
+    def __init__():
+        super().__init__()
+        add_path_to_dust3r(cut3r_model_path)
+
+        # Import model and inference functions after adding the ckpt path.
+        from src.dust3r.inference import inference, inference_recurrent
+        from src.dust3r.model import ARCroco3DStereo
+
+        model = ARCroco3DStereo.from_pretrained(cut3r_model_path).to('cuda')
+        model.eval()
+        outputs, state_args = inference(views, model, device)
+    def forward(self, x):
+        return self.net(x)
+
+
+class ResidualMLP(nn.Module):
+    def __init__(self, in_dim=3, hidden_dim=512, embed_dim=1152, depth=4):
+        super().__init__()
+        layers = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
+        for _ in range(depth - 2):
+            layers += [
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU()
+            ]
+        layers.append(nn.Linear(hidden_dim, embed_dim))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+    
+class Coord3DPatchEmbed(nn.Module):
+    def __init__(self, embed_dim=1152, hidden_dim=512, patch_shape=(27, 27), depth=4):
+        super().__init__()
+        self.patch_shape = patch_shape
+        self.embed_dim = embed_dim
+        # self.mlp = ResidualMLP(3, hidden_dim, embed_dim, depth) #residual version
+        self.mlp = nn.Sequential(
+            nn.Linear(3, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)  # 최종 출력
+        )
+
+    def forward(self, coords):  # [B, 729, 3]
+        B, N, _ = coords.shape
+        x = self.mlp(coords)              # [B, 729, embed_dim]
+        x = x.transpose(1, 2).view(B, self.embed_dim, *self.patch_shape) # [B, embed_dim, H, W]
+        return x
+
+
+################################################################################################################3
 
 
 class SiglipVisionEmbeddings(nn.Module):
@@ -265,19 +524,22 @@ class SiglipVisionEmbeddings(nn.Module):
         self.embed_dim = config.hidden_size
         self.image_size = config.image_size
         self.patch_size = config.patch_size
-
+        
         self.patch_embedding = nn.Conv2d(
-            in_channels=config.num_channels,
-            out_channels=self.embed_dim,
-            kernel_size=self.patch_size,
-            stride=self.patch_size,
-            padding="valid",
+            in_channels=config.num_channels,  # Should be 3 for RGB images
+            out_channels=self.embed_dim,      # Output embedding dimension (e.g., 1152)
+            kernel_size=self.patch_size,      # Size of each patch (e.g., 14, 16, etc.)
+            stride=self.patch_size,           # Moving step (same as patch size)
+            padding="valid",                   # No padding
         )
-
+        
         self.num_patches = (self.image_size // self.patch_size) ** 2
         self.num_positions = self.num_patches
-        self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
+        self.position_embedding = nn.Embedding(num_embeddings=self.num_positions, embedding_dim=self.embed_dim)
         self.register_buffer("position_ids", torch.arange(self.num_positions).expand((1, -1)), persistent=False)
+
+        # self.position_embedding_exp = nn.Embedding(num_embeddings=45*27, embedding_dim=self.embed_dim)
+        # self.register_buffer("position_ids_expand", torch.arange(45*27).expand((1, -1)), persistent=False)
 
     def interpolate_pos_encoding(self, embeddings: torch.Tensor, height: int, width: int) -> torch.Tensor:
         """
@@ -291,6 +553,7 @@ class SiglipVisionEmbeddings(nn.Module):
         position_embeddings = self.position_embedding.weight.unsqueeze(0)
         num_patches = embeddings.shape[1]
         num_positions = position_embeddings.shape[1]
+        print(f"num_patches {num_patches}, num_positions {num_positions}")
         if num_patches == num_positions and height == width:
             return position_embeddings
 
@@ -318,15 +581,204 @@ class SiglipVisionEmbeddings(nn.Module):
         return patch_pos_embed
 
     def forward(self, pixel_values: torch.FloatTensor, interpolate_pos_encoding=False) -> torch.Tensor:
-        _, _, height, width = pixel_values.shape
-        patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid]
-        embeddings = patch_embeds.flatten(2).transpose(1, 2)
+        _, _, height, width = pixel_values.shape # torch.Size([6, 3, 384, 384])
+        patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid], torch.Size([6, 1152, 27, 27])
+        embeddings = patch_embeds.flatten(2).transpose(1, 2) # torch.Size([6, 729, 1152])
 
-        if interpolate_pos_encoding:
+        if interpolate_pos_encoding: #이게 언제 콜되는지 모르겠음. 일단 임의로 True 만들어놓음
+            # print("interpolate_pos_encoding is called()")
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
         else:
-            embeddings = embeddings + self.position_embedding(self.position_ids)
+            """
+            # print("no interpolation")
+            # embeddings torch.Size([6, 729, 1152])
+            # position_embedding torch.Size([1, 729, 1152])
+            # self.position_ids 는 tensor([[0, 1, ... ,728]], device='cuda:0')
+            # print(self.position_ids)
+            
+            #######
+            # trial1: 12345 가로순서, 이미지 내에서 끊어짐
+            # pos_temp = self.position_embedding_exp(self.position_ids_expand).view((1,27,-1,1152))
+            # # print(pos_temp[:,:,:27,:].shape)
+
+            # embedding_temp = embeddings[0].view((1,27,27,1152))
+            # embedding_temp = embedding_temp + pos_temp[:,:,:27,:]
+            # embeddings[0] = embedding_temp.view((1,27*27,-1))
+
+            # embedding_temp = embeddings[1].view((1,27,27,1152))
+            # embedding_temp = embedding_temp + pos_temp[:,:,45-27:,:]
+            # embeddings[1] = embedding_temp.view((1,27*27,-1))
+            
+            #######
+            # trial2: 12345 가로순서, 이미지 내에서 끊어짐 --> 최대한 pretrained weight 써보기로 고쳐보기.
+            # pos_temp = self.position_embedding_exp(self.position_ids_expand).view((1,27,-1,1152))
+            # pos_org = self.position_embedding(self.position_ids).view((1,27,-1,1152))
+            # # print(pos_temp[:,:,:27,:].shape)
+
+            # embedding_temp = embeddings[0].view((1,27,27,1152))
+            # embedding_temp = embedding_temp + pos_org #pos_temp[:,:,:27,:]
+            # embeddings[0] = embedding_temp.view((1,27*27,-1))
+
+            # embedding_temp = embeddings[1].view((1,27,27,1152))
+            # embedding_temp = embedding_temp + pos_temp[:,:,45-27:,:]
+            # embeddings[1] = embedding_temp.view((1,27*27,-1))
+
+            #######
+            # # trial3: 12345 세로순서로, 이미지 내에서 안끊어지게
+            # pos_temp = self.position_embedding_exp(self.position_ids_expand).view((1,-1,27,1152)).transpose(1,2)
+            # pos_org = self.position_embedding(self.position_ids).view((1,27,-1,1152)).transpose(1,2)
+
+            # embedding_temp = embeddings[0].view((1,27,27,1152))
+            # embedding_temp = embedding_temp +  pos_org#pos_temp[:,:,:27,:] #pos_org #이거 쓰면 Pretrained weight 사용됨.
+            # embeddings[0] = embedding_temp.view((1,27*27,-1))
+
+            # embedding_temp = embeddings[1].view((1,27,27,1152))
+            # embedding_temp = embedding_temp + pos_temp[:,:,45-27:,:]
+            # embeddings[1] = embedding_temp.view((1,27*27,-1))
+
+            #######
+            # # trial4: MASt3R 로 매칭해보기.
+            # embeddings = MASt3R().merge_features(pixel_values, embeddings, self.position_embedding(self.position_ids))
+            # embeddings = embeddings + pos_emb_change
+
+            #################################################3
+            # 인덱스 구멍나도 하는지 실험.
+
+            
+
+            # ### 구멍뚫린 pos emb v1 - 이미지 인풋을 196으로 바궈서 넣어버림
+            # pos_emb_org = self.position_embedding(self.position_ids).view(27,27,1152)
+            # # 1. stride=2로 slicing
+            # pos_emb_sparse = pos_emb_org[0:26:2, 0:26:2, :]  # (13, 13, 1152)
+
+            # # 2. (선택 사항) flatten
+            # pos_emb_flat = pos_emb_sparse.reshape(1, -1, 1152)  # shape: (196, 1152)
+            # print(f"pos_emb_flat {pos_emb_flat.size}")
+
+            # embeddings = embeddings + pos_emb_flat
+
+
+            ## 구멍뚫린 pos emb v2 - 인덱스 중복으로
+            # pos_emb_org = self.position_embedding(self.position_ids).view(27,27,1152)
+            # def blockwise_propagate(pos_emb_org: torch.Tensor, block_size: int = 2, ref="topleft"):
+            #     
+            #     pos_emb_org: (H, W, dim)
+            #     block_size: int — 예: 2, 3, 4, ...
+            #     ref: 기준값 위치: "topleft", "topright", "bottomright", "bottomleft", "center"
+            #     
+            #     h, w, dim = pos_emb_org.shape
+            #     new_emb = pos_emb_org.clone()
+
+            #     for i in range(0, h, block_size):
+            #         for j in range(0, w, block_size):
+            #             ref_i, ref_j = i, j
+
+            #             if ref == "topright":
+            #                 ref_j = j + block_size - 1
+            #             elif ref == "bottomright":
+            #                 ref_i = i + block_size - 1
+            #                 ref_j = j + block_size - 1
+            #             elif ref == "bottomleft":
+            #                 ref_i = i + block_size - 1
+            #             elif ref == "center":
+            #                 ref_i = i + block_size // 2
+            #                 ref_j = j + block_size // 2
+
+            #             # 경계 초과 시 스킵
+            #             if ref_i >= h or ref_j >= w:
+            #                 continue
+
+            #             ref_val = pos_emb_org[ref_i, ref_j]
+
+            #             for di in range(block_size):
+            #                 for dj in range(block_size):
+            #                     row = i + di
+            #                     col = j + dj
+            #                     if row < h and col < w:
+            #                         new_emb[row, col] = ref_val
+
+            #     return new_emb
+
+            # # 블록 단위로 확장된 임베딩
+            # # pos_emb_smooth = blockwise_propagate(pos_emb_org, block_size=2,ref="bottomright")
+            # pos_emb_smooth = blockwise_propagate(pos_emb_org, block_size=3,ref="bottomright")
+            # pos_emb_flat = pos_emb_smooth.reshape(1, -1, 1152)
+
+            # embeddings = embeddings + pos_emb_flat
+
+
+            ### 구멍뚫린 pos emb v3 - 패치사이즈를 크게 바꿔버림.
+            # pos_emb_org = self.position_embedding(self.position_ids).view(27,27,1152)
+            # pos_emb_sparse = pos_emb_org[0:26:2, 0:26:2, :]  # (13, 13, 1152)
+            # pos_emb_flat = pos_emb_sparse.reshape(1, -1, 1152)  # shape: (196, 1152)
+
+            # # 임베딩을 수정시킴
+            # # embeddings: (batch, 196, ) → (batch, 1152, 14, 14)로 reshape
+            # batch_size=1
+            # emb_reshaped = embeddings.permute(0, 2, 1).reshape(batch_size, 1152, 27, 27)
+
+            # # avg_pool2d 적용 (14x14 → 13x13)
+            # emb_pooled = F.avg_pool2d(emb_reshaped, kernel_size=2, stride=2)  # shape: (batch, 1152, 13, 13)
+
+            # # 다시 (batch, 169, 1152)로 reshape
+            # embeddings = emb_pooled.reshape(batch_size, 1152, -1).permute(0, 2, 1)  # (batch, 169, 1152)
+            # embeddings = embeddings + pos_emb_flat
+            """
+            
+            embeddings = embeddings + self.position_embedding(self.position_ids) # element-wise add
+            # embeddings torch.Size([6, 729, 1152])
         return embeddings
+    
+    def forward_org_backup(self, pixel_values: torch.FloatTensor, interpolate_pos_encoding=False) -> torch.Tensor:
+        _, _, height, width = pixel_values.shape # torch.Size([6, 3, 384, 384])
+        patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid], torch.Size([6, 1152, 27, 27])
+        embeddings = patch_embeds.flatten(2).transpose(1, 2) # torch.Size([6, 729, 1152])
+
+        if interpolate_pos_encoding:
+            print("interpolate_pos_encoding is called()")
+            embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
+        else:
+            embeddings = embeddings + self.position_embedding(self.position_ids) # element-wise add
+            # embeddings torch.Size([6, 729, 1152])
+        return embeddings
+
+
+
+class SiglipVisionEmbeddings_3D(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.embed_dim = config.hidden_size
+        self.image_size = config.image_size
+        self.patch_size = config.patch_size
+        
+        self.patch_embedding = nn.Conv2d(
+            in_channels=config.num_channels,  # Should be 3 for RGB images
+            out_channels=self.embed_dim,      # Output embedding dimension (e.g., 1152)
+            kernel_size=self.patch_size,      # Size of each patch (e.g., 14, 16, etc.)
+            stride=self.patch_size,           # Moving step (same as patch size)
+            padding="valid",                   # No padding
+        )
+        
+        self.num_patches = (self.image_size // self.patch_size) ** 2
+        self.num_positions = self.num_patches
+        self.position_embedding = nn.Embedding(num_embeddings=self.num_positions, embedding_dim=self.embed_dim)
+        self.position_embedding3d = Coord3DPatchEmbed(embed_dim=1152, hidden_dim=512, patch_shape=(27, 27), depth=4)
+        self.register_buffer("position_ids", torch.arange(self.num_positions).expand((1, -1)), persistent=False)
+
+    def forward(self, pixel_values: torch.FloatTensor, coords_3d, interpolate_pos_encoding=False) -> torch.Tensor:
+        _, _, height, width = pixel_values.shape # torch.Size([6, 3, 384, 384])
+        patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid], torch.Size([6, 1152, 27, 27])
+        embeddings = patch_embeds.flatten(2).transpose(1, 2) # torch.Size([6, 729, 1152])
+
+        pos_emb_3d = self.position_embedding3d(coords_3d) #3d coordinate 들어감.
+
+        # 일단은 add 방식으로 (성능 안나오면 concat으로 바꿔볼 것)
+        embeddings = embeddings + self.position_embedding(self.position_ids) # element-wise add
+        embeddings = embeddings + pos_emb_3d
+            # embeddings torch.Size([6, 729, 1152])
+        return embeddings
+    
 
 
 # Copied from transformers.models.clip.modeling_clip.CLIPTextEmbeddings with CLIP->Siglip
@@ -715,7 +1167,7 @@ class SiglipMLP(nn.Module):
         return hidden_states
 
 
-class SiglipEncoderLayer(nn.Module):
+class SiglipEncoderLayer(nn.Module): # siglip vision encoder 사용시 이 레이어들 하나씩 불러와져서 너헝줌.
     def __init__(self, config: SiglipConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
@@ -1159,7 +1611,7 @@ class SiglipVisionTransformer(nn.Module):
         super().__init__()
         self.config = config
         embed_dim = config.hidden_size
-
+        print("modeling_siglip.py: SiglipVisionTransformer() is called")
         self.embeddings = SiglipVisionEmbeddings(config)
         self.encoder = SiglipEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
@@ -1187,7 +1639,11 @@ class SiglipVisionTransformer(nn.Module):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # 여기 들어가는 pixel_values는 이미지 사이즈 그대로. torch.Size([6, 3, 384, 384])
+        # patch embedding 위치!!!!!
         hidden_states = self.embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
+        # hidden_states 는 27*27 (patch크기 14로 자를 경우 개수임)로 변환됨. torch.Size([6, 729, 1152])
+        # 즉 self.embeddings 거치면서 14 배수로 잘린 후 진행되는 듯.
 
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
@@ -1196,13 +1652,16 @@ class SiglipVisionTransformer(nn.Module):
             return_dict=return_dict,
         )
 
-        last_hidden_state = encoder_outputs[0]
+        last_hidden_state = encoder_outputs[0] #??
         last_hidden_state = self.post_layernorm(last_hidden_state)
-
+        # print("modeling_siglip.py: SiglipVisionTransformer: last_hidden_state", last_hidden_state.shape)
         pooler_output = self.head(last_hidden_state) if self.use_head else None
         if not return_dict:
             return (last_hidden_state, pooler_output) + encoder_outputs[1:]
-
+        # print("modeling_siglip.py: SiglipVisionTransformer: return_dict")
+        # print(f"modeling_siglip.py last_hidden_state: {last_hidden_state.shape}")
+        # print(f"modeling_siglip.py pooler_output: {pooler_output.shape}")
+        
         return BaseModelOutputWithPooling(
             last_hidden_state=last_hidden_state,
             pooler_output=pooler_output,
@@ -1242,9 +1701,11 @@ class SiglipMultiheadAttentionPoolingHead(nn.Module):
 class SiglipVisionModel(SiglipPreTrainedModel):
     config_class = SiglipVisionConfig
     main_input_name = "pixel_values"
+    
 
     def __init__(self, config: SiglipVisionConfig):
         super().__init__(config)
+        print("modeling_siglip.py: SiglipVisionModel")
 
         self.vision_model = SiglipVisionTransformer(config)
 
@@ -1504,7 +1965,7 @@ class SiglipModel(SiglipPreTrainedModel):
         image_embeds = vision_outputs[1]
         text_embeds = text_outputs[1]
 
-        # normalized features
+        # normalized features (이미지는 일단 들어오면 normalize 진행)
         image_embeds = image_embeds / image_embeds.norm(p=2, dim=-1, keepdim=True)
         text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
 

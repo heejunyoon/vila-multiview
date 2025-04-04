@@ -1,0 +1,51 @@
+{
+  "os": "Linux-6.8.0-52-generic-x86_64-with-glibc2.35",
+  "python": "3.10.14",
+  "startedAt": "2025-04-03T08:04:53.557410Z",
+  "args": [
+    "--model-name",
+    "Llama-3-VILA1.5-8B",
+    "--model-path",
+    "Efficient-Large-Model/Llama-3-VILA1.5-8B",
+    "--conv-mode",
+    "auto",
+    "--tags-include",
+    "local"
+  ],
+  "program": "/home/heejunyoon/anaconda3/envs/vila/bin/vila-eval",
+  "git": {
+    "remote": "https://github.com/NVlabs/VILA",
+    "commit": "c8f603b49f5dcfca8c2ee18d7979897a83aa5fa6"
+  },
+  "email": "hjyoon9808@gmail.com",
+  "root": "/home/heejunyoon/1_CODE/VILA",
+  "host": "heejunyoon-OMEN-by-HP-45L-Gaming-Desktop-GT22-3xxx",
+  "username": "heejunyoon",
+  "executable": "/home/heejunyoon/anaconda3/envs/vila/bin/python",
+  "cpu_count": 24,
+  "cpu_count_logical": 24,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "2014574526464",
+      "used": "625273094144"
+    }
+  },
+  "memory": {
+    "total": "66776621056"
+  },
+  "cpu": {
+    "count": 24,
+    "countLogical": 24
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "25757220864",
+      "cudaCores": 16384,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "12.4"
+}

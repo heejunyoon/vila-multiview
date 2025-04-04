@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DEFAULT_GPUS_PER_NODE=8
+DEFAULT_GPUS_PER_NODE=1
 DEFAULT_MASTER_ADDR="127.0.0.1"
 DEFAULT_MASTER_PORT=25001
 
@@ -14,7 +14,7 @@ echo "RUN_NAME = $RUN_NAME"
 OUTPUT_DIR=${OUTPUT_DIR:-"runs/train/$RUN_NAME"}
 echo "OUTPUT_DIR = $OUTPUT_DIR"
 
-export WANDB_PROJECT="vila"
+export WANDB_PROJECT="vila_3d_pos" #setting the project name of wandb
 export WANDB_DIR=$OUTPUT_DIR
 export WANDB_RUN_ID=$RUN_NAME
 export WANDB_NAME=$RUN_NAME
